@@ -11,6 +11,8 @@ import org.springframework.stereotype.Component;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -186,5 +188,27 @@ public class RedisUtil {
         redisData.setData(t);
         redisData.setExpireTime(LocalDateTime.now().plusMinutes(60));
         return redisData;
+    }
+    //时间戳的起点
+    private static final long BEGIN_TIMESTAMP = 1640995200L;
+    //移位的位数
+    private static final int COUNT_BITS = 32;
+
+    public long nextId(String keyPrefix){
+        //获取时间戳
+        LocalDateTime now = LocalDateTime.now();
+        long nowSecond = now.toEpochSecond(ZoneOffset.UTC);//时间戳终点
+        long timesTamp = nowSecond-BEGIN_TIMESTAMP;//时间戳
+
+
+        //获取当前日期，精确到天
+        String date = now.format(DateTimeFormatter.ofPattern("yyyy:MM:dd"));
+        //自增长，主要是记录id个数,返回对应个数
+        long count = stringRedisTemplate.opsForValue().increment("icr:" + keyPrefix + ":" + date);//该方法会对key对应的数值自增，没有则舒适化为0再自增
+
+        //拼接id返回
+        return timesTamp << COUNT_BITS | count;
+
+
     }
 }
