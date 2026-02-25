@@ -36,7 +36,7 @@ public class RefreshTokenInterceptor implements HandlerInterceptor {
         //获取请求头中的token
         String token = request.getHeader("authorization");
         //根据token获取redis中对应的用户
-        Map<Object, Object> userMap = stringRedisTemplate.opsForHash().entries("login:user:"+token);
+        Map<Object, Object> userMap = stringRedisTemplate.opsForHash().entries("login:user::"+token);
         if(userMap != null && userMap.size() != 0){
             log.info("检测到用户登录，刷新用户token");
             //有用户信息，将用户信息转为userDTO并存放致ThreadLocal

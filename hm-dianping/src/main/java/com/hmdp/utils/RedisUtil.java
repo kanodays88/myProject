@@ -204,7 +204,7 @@ public class RedisUtil {
         //获取当前日期，精确到天
         String date = now.format(DateTimeFormatter.ofPattern("yyyy:MM:dd"));
         //自增长，主要是记录id个数,返回对应个数
-        long count = stringRedisTemplate.opsForValue().increment("icr:" + keyPrefix + ":" + date);//该方法会对key对应的数值自增，没有则舒适化为0再自增
+        long count = stringRedisTemplate.opsForValue().increment("icr:" + keyPrefix + "::" + date);//该方法会对key对应的数值自增，没有则舒适化为0再自增
 
         //拼接id返回
         return timesTamp << COUNT_BITS | count;
