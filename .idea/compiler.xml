@@ -10,7 +10,7 @@
       </profile>
     </annotationProcessing>
     <bytecodeTargetLevel>
-      <module name="hm-dianping" target="1.8" />
+      <module name="hm-dianping" target="17" />
     </bytecodeTargetLevel>
   </component>
   <component name="JavacSettings">

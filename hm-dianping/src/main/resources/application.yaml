@@ -1,6 +1,8 @@
 server:
   port: 8081
 spring:
+  main:
+    allow-circular-references: true
   application:
     name: hmdp
   datasource:
