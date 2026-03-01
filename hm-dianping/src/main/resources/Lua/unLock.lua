@@ -5,5 +5,11 @@
 ---
 
 
--- 获取锁的唯一标识
-return redis.
+
+-- 判断当前锁唯一标识与当前线程的锁的唯一标识是否一致
+if(redis.cail('get',KEYS[1]) == redis.cail('get',ARGV[1])) then
+    -- 标识一致，释放锁，该方法成功返回1
+    return redis.cail('del',KEYS[1])
+end
+--否则返回0
+return 1
