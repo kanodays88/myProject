@@ -1,7 +1,5 @@
 package com.hmdp.utils;
 
-import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSON;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -23,9 +21,9 @@ public class RedisUtil {
     private StringRedisTemplate stringRedisTemplate;
 
 
-    public boolean tryLock(String key){
+    public <T> boolean tryLock(String key,T value,long time){
         //setIfAbsent创建键值对，如果存在则创建并返回true,否则不创建返回false
-        Boolean aBoolean = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", 10, TimeUnit.SECONDS);
+        Boolean aBoolean = stringRedisTemplate.opsForValue().setIfAbsent(key, value+"", time, TimeUnit.SECONDS);
 //        return aBoolean.booleanValue();这种方法无法避免当aBoolean为null产生报错
         return Boolean.TRUE.equals(aBoolean);//直接用其与TRUE进行对比
     }
@@ -103,7 +101,7 @@ public class RedisUtil {
         //不存在
         try{
             //尝试获取互斥锁
-            lockStatus = tryLock(lockName + id);
+            lockStatus = tryLock(lockName + id,1,5);
             //获取锁失败
             if(lockStatus == false) {
                 for (int i = 0; i < 5; i++) {
@@ -166,7 +164,7 @@ public class RedisUtil {
         //过期
         try{
             //尝试获取互斥锁
-            lockStatus = tryLock(lockName + id);
+            lockStatus = tryLock(lockName + id,1,5);
             //获取锁失败
             if(lockStatus == false) {
                 //直接返回旧数据或者空数据

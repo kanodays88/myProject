@@ -26,7 +26,6 @@ import org.aspectj.lang.annotation.Before;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.stereotype.Component;
 
-import java.io.Serializable;
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 

@@ -31,7 +31,7 @@ public class MVCConfig implements WebMvcConfigurer {
                         "/blog/hot",
                         "/user/code",
                         "/user/login",
-                        "/voucher/seckill")
+                        "/voucher/**")
                 .order(1);
         registry.addInterceptor(refreshTokenInterceptor)
                 .addPathPatterns("/**").order(0);

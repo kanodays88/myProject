@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.SeckillVoucher;
-import com.hmdp.entity.Voucher;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherMapper;
@@ -14,22 +13,16 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisUtil;
 import com.hmdp.utils.UserHolder;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * <p>
- *  服务实现类
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
- */
+
 @Service
 public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, VoucherOrder> implements IVoucherOrderService {
 
@@ -47,13 +40,22 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private VoucherOrderMapper voucherOrderMapper;
 
     @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Autowired
     private SeckillVoucherMapper seckillVoucherMapper;
+
+    //redis分布式锁名，拼接用户id
+    private static final String REDISLOCKNAME = "lock:seckillVoucherOrder::";
 
 
     private static final String CACHE_NAME_OF_SECKILL_VOUCHER_ORDER = "cache:seckillVoucher::";
     private static final String CACHE_NAME_OF_VOUCHER_ORDER = "cache:voucher::";
     // 定义全局的锁容器，存储每个用户ID对应的锁对象
     private static final ConcurrentHashMap<Long,Object> USER_LOCKS = new ConcurrentHashMap<>();
+
+    //该UUID因为被设定为静态常量，所以只会在创建的时候初始化一次，后续永远不变，这里相当于用作标识该类
+    private static final String ID_PREFIX = UUID.randomUUID().toString()+"-";
 
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -73,23 +75,48 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if(seckillVoucher.getStock() <= 0){
             return Result.fail("卖完了");
         }
-        /**
-         * 这里t->new Object()相当于   private Object function(Object k){return new Object()}
-         * computeIfAbsent()方法：当键值对不存在时创建键值对，存在则直接返回键对应的值
-         * 这里的核心思路就是为每个userId创建一个Object实体，多个线程的相同userId在这个HashMap上只能获取到相同的Object实体,这里的Obejct相当于标识userId
-         */
-        Object userLock = USER_LOCKS.computeIfAbsent(UserHolder.getUser().getId(), t -> new Object());
-        //添加悲观锁,多个相同的userLock,有且只有一个能够进入synchronized
-        synchronized (userLock) {
-            Result r = null;
-            try{
-                r = voucherOrderServiceImpl.getResult(seckillVoucher);
-            }finally {
-                //清除锁的实体避免内存泄露
-                USER_LOCKS.remove(UserHolder.getUser().getId());
-            }
-            return r;
+        //悲观锁版本
+//        /**
+//         * 这里t->new Object()相当于   private Object function(Object k){return new Object()}
+//         * computeIfAbsent()方法：当键值对不存在时创建键值对，存在则直接返回键对应的值
+//         * 这里的核心思路就是为每个userId创建一个Object实体，多个线程的相同userId在这个HashMap上只能获取到相同的Object实体,这里的Obejct相当于标识userId
+//         */
+//        Object userLock = USER_LOCKS.computeIfAbsent(UserHolder.getUser().getId(), t -> new Object());
+//        //添加悲观锁,多个相同的userLock,有且只有一个能够进入synchronized
+//        synchronized (userLock) {
+//            Result r = null;
+//            try{
+//                r = voucherOrderServiceImpl.getResult(seckillVoucher);
+//            }finally {
+//                //清除锁的实体避免内存泄露
+//                USER_LOCKS.remove(UserHolder.getUser().getId());
+//            }
+//            return r;
+//        }
+
+
+        //redis分布式锁版本，解决集群中锁不共用问题
+        //尝试获取redis分布式锁                  锁名key: 作用：业务：对应用户                        值value: 当前线程的唯一标识id      上锁时间，单位秒
+        boolean lockStatus = redisUtil.tryLock(REDISLOCKNAME + UserHolder.getUser().getId(), ID_PREFIX+Thread.currentThread().getId(), 5);
+        if(lockStatus == false){
+            //说明锁被占用，说明同一个用户在多次下单且该用户此时正在下单
+            return Result.fail("请勿重复操作");
         }
+        //上锁成功，执行扣库存生成订单业务
+        Result r = null;//存储try块内的返回结果
+        try{
+            r = voucherOrderServiceImpl.getResult(seckillVoucher);
+        }finally {
+            //释放锁
+            //先判断该锁是不是由该线程自己创建的
+            String s = stringRedisTemplate.opsForValue().get(REDISLOCKNAME + UserHolder.getUser().getId());
+            if((ID_PREFIX+Thread.currentThread().getId()).equals(s)){
+               //标识相同证明是同一个线程创建的锁，可以释放
+               redisUtil.deleteLock(REDISLOCKNAME + UserHolder.getUser().getId());
+            }
+        }
+        return r;
+
     }
 
     @Override
