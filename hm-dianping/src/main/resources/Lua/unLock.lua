@@ -8,9 +8,9 @@
 
 -- 判断当前锁唯一标识与当前线程的锁的唯一标识是否一致
 --    当前锁的标识             当前线程创建的锁的标识
-if(redis.cail('get',KEYS[1]) == ARGV[1]) then
+if(redis.call('get',KEYS[1]) == ARGV[1]) then
     -- 标识一致，释放锁，该方法成功返回1
-    return redis.cail('del',KEYS[1])
+    return redis.call('del',KEYS[1])
 end
 --否则返回0
 return 1

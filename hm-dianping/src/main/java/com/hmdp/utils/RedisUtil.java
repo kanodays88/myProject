@@ -4,13 +4,16 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -20,6 +23,19 @@ public class RedisUtil {
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
+    //lua脚本的加载类                        返回类型
+    private static final DefaultRedisScript<Long> REDIS_SCRIPT;
+    static {
+        //初始化
+        REDIS_SCRIPT = new DefaultRedisScript<>();
+        //指定lua脚本                       将lua脚本包装成Resource类型
+        REDIS_SCRIPT.setLocation(new ClassPathResource("Lua/unLock.lua"));
+        //指定返回类型
+        REDIS_SCRIPT.setResultType(Long.class);
+    }
+
+
+
 
     public <T> boolean tryLock(String key,T value,long time){
         //setIfAbsent创建键值对，如果存在则创建并返回true,否则不创建返回false
@@ -28,8 +44,18 @@ public class RedisUtil {
         return Boolean.TRUE.equals(aBoolean);//直接用其与TRUE进行对比
     }
 
+    //普通缓存删除
     public void deleteLock(String key){
         stringRedisTemplate.delete(key);
+    }
+    /**
+     * 分布式锁对应锁的缓存删除，主要实现（判断该线程和该锁是不是对应关系，对应可删）
+     * @param key 锁名
+     * @param argv 锁对应的值（线程的唯一标识加UUID)
+     */
+    public void deleteLock(String key,String argv){
+        //执行lua脚本
+        Long execute = stringRedisTemplate.execute(REDIS_SCRIPT, Collections.singletonList(key), argv);
     }
 
     //往redis添加缓存，具有TTL过期时间

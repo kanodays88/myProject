@@ -13,7 +13,7 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
      * @param voucherId
      * @return
      */
-    Result seckillVoucher(Long voucherId);
+    Result seckillVoucher(Long voucherId) throws InterruptedException;
 
     /**
      * 内部方法，主要用于实现回滚
