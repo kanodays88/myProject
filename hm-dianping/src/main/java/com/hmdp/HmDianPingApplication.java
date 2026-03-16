@@ -23,19 +23,19 @@ public class HmDianPingApplication {
     }
 
 
-    // 配置StringRedisTemplate（和SpringCache用相同的序列化）
-    @Bean
-    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory factory) {
-        StringRedisTemplate template = new StringRedisTemplate(factory);
-        // key用字符串序列化
-        template.setKeySerializer(new StringRedisSerializer());
-        template.setHashKeySerializer(new StringRedisSerializer());
-        // value用JSON序列化（和SpringCache一致）
-        template.setValueSerializer(new GenericJackson2JsonRedisSerializer());
-        template.setHashValueSerializer(new GenericJackson2JsonRedisSerializer());
-        template.afterPropertiesSet();
-        return template;
-    }
+//    // 配置StringRedisTemplate（和SpringCache用相同的序列化）
+//    @Bean
+//    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory factory) {
+//        StringRedisTemplate template = new StringRedisTemplate(factory);
+//        // key用字符串序列化
+//        template.setKeySerializer(new StringRedisSerializer());
+//        template.setHashKeySerializer(new StringRedisSerializer());
+//        // value用JSON序列化（和SpringCache一致）
+//        template.setValueSerializer(new GenericJackson2JsonRedisSerializer());
+//        template.setHashValueSerializer(new GenericJackson2JsonRedisSerializer());
+//        template.afterPropertiesSet();
+//        return template;
+//    }
     // 配置SpringCache的Redis缓存管理器（指定序列化）
     @Bean
     public RedisCacheManager cacheManager(RedisConnectionFactory factory) {

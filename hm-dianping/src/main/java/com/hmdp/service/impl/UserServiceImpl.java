@@ -17,6 +17,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
@@ -49,6 +50,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
     }
 
     @Override
+    @Transactional
     public Result login(LoginFormDTO loginForm, HttpSession session) {
         //校验手机号是否是无效格式
         if(RegexUtils.isPhoneInvalid(loginForm.getPhone()) == true){
@@ -72,6 +74,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if(list == null || list.size() == 0){
             User user = User.builder().phone(loginForm.getPhone()).nickName("user_"+RandomUtil.randomString(10)).build();
             int rows = userMapper.insert(user);
+            //这里不知道为什么icon突然为null了，直接修改为""
+            user.setIcon("");
             //将用户保存到redis,键就用UUID生成
             String token = UUID.randomUUID().toString();
             BeanUtils.copyProperties(user,userDTO);

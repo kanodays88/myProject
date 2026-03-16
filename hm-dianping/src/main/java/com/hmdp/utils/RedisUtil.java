@@ -187,6 +187,7 @@ public class RedisUtil {
 
         boolean lockStatus = false;//存储获取互斥锁的状态
         T t = null;//获取数据库查询结果
+	// TODO 逻辑过期是通过另一个线程创建新缓存的，如果查询的缓存过期，直接返回过期值，然后获取锁，获取成功就创建另一个线程查库创建新缓存
         //过期
         try{
             //尝试获取互斥锁
