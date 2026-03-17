@@ -2,26 +2,38 @@ package com.hmdp.utils;
 
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PreDestroy;
 import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 @Component
 @Slf4j
 public class RedisUtil {
 
+
+
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
+
+    //创建线程池为10个线程
+    private final ExecutorService CACHE_REFRESH_POOL = Executors.newFixedThreadPool(10);
 
     //lua脚本的加载类                        返回类型
     private static final DefaultRedisScript<Long> REDIS_SCRIPT;
@@ -179,40 +191,73 @@ public class RedisUtil {
             //如果存在，且不为空
             if(json.equals("")) return null;
             bean = JSONUtil.toBean(json, RedisData.class);
-            //如果没过期，直接返回
-            if(LocalDateTime.now().compareTo(bean.getExpireTime()) <= 0){
-                return bean;
+            //不管过没过期都直接返回bean
+            //如果bean是过期的就开启新线程创建缓存
+            if(LocalDateTime.now().compareTo(bean.getExpireTime()) > 0){
+                //从线程池调用线程执行方法
+                CACHE_REFRESH_POOL.submit(()->{
+                    //获取分布式锁的情况
+                    boolean lockStatus = false;
+                    try{
+                        //获取分布式锁
+                        lockStatus = tryLock(lockName + id,1,5);
+                        if(lockStatus == false){
+                            //锁获取失败，有其他线程在创建缓存
+                            log.error("锁获取失败，有其他线程在创建缓存");
+                            return;
+                        }
+                        //获取锁成功，查询数据并更新缓存
+                        T t = tMapper.selectById((Serializable) id);
+                        boolean cacheStatus = setValueForRedis(keyPrefix + id, t, LocalDateTime.now().plusMinutes(5));
+                        if(cacheStatus == false){
+                            log.error("缓存创建失败");
+                            return;
+                        }
+                    }catch (Exception e){
+                        e.printStackTrace();
+                    }finally {
+                        if(lockStatus == true){
+                            deleteLock(lockName+id);
+                        }
+                    }
+                });
             }
+            return bean;
+        }
+        return null;
+    }
+
+    //shutdown拒绝新任务，等待已提交任务执行  shutdownNow强制关闭  awaitTermination阻塞等待线程池关闭，关闭完成返回true，超时返回false
+
+    // 4. 优雅关闭线程池（Spring销毁时执行）
+    @PreDestroy
+    public void destroyThreadPool() {
+        if (CACHE_REFRESH_POOL == null || CACHE_REFRESH_POOL.isShutdown()) {
+            return;
         }
 
-        boolean lockStatus = false;//存储获取互斥锁的状态
-        T t = null;//获取数据库查询结果
-	// TODO 逻辑过期是通过另一个线程创建新缓存的，如果查询的缓存过期，直接返回过期值，然后获取锁，获取成功就创建另一个线程查库创建新缓存
-        //过期
-        try{
-            //尝试获取互斥锁
-            lockStatus = tryLock(lockName + id,1,5);
-            //获取锁失败
-            if(lockStatus == false) {
-                //直接返回旧数据或者空数据
-                return bean;
+        log.info("开始关闭缓存重建线程池...");
+        // 第一步：发起关闭请求（拒绝新任务，等待已提交任务执行）
+        CACHE_REFRESH_POOL.shutdown();
+
+        try {
+            // 第二步：阻塞等待，最多等10秒（超时则强制关闭）
+            // 超时时间根据你的业务调整：缓存重建一般5秒内完成，设10秒足够
+            if (!CACHE_REFRESH_POOL.awaitTermination(10, TimeUnit.SECONDS)) {
+                log.warn("线程池10秒内未关闭完成，强制中断剩余任务");
+                // 第三步：超时未关闭，强制中断（兜底）
+                List<Runnable> remainingTasks = CACHE_REFRESH_POOL.shutdownNow();
+                log.warn("强制关闭线程池，未执行的任务数：{}", remainingTasks.size());
+            } else {
+                log.info("线程池优雅关闭完成");
             }
-            //获取锁成功
-            t = tMapper.selectById((Serializable) id);
-            //存入缓存
-            setValueForRedis(keyPrefix+id,t,LocalDateTime.now().plusMinutes(60));
-        }catch (Exception e){
-            e.printStackTrace();
-        } finally {
-            //如果获取锁成功就删除锁
-            if(lockStatus == true) {
-                deleteLock(lockName+id);
-            }
+        } catch (InterruptedException e) {
+            // 等待过程中被中断，再次强制关闭
+            log.error("线程池关闭等待被中断，强制关闭", e);
+            CACHE_REFRESH_POOL.shutdownNow();
+            // 恢复中断状态（线程规范）
+            Thread.currentThread().interrupt();
         }
-        RedisData redisData = new RedisData();
-        redisData.setData(t);
-        redisData.setExpireTime(LocalDateTime.now().plusMinutes(60));
-        return redisData;
     }
     //时间戳的起点
     private static final long BEGIN_TIMESTAMP = 1640995200L;

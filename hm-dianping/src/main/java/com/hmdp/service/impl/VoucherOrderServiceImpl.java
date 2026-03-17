@@ -114,13 +114,13 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         long orderId = redisUtil.nextId("order");
         //将用户id,商品id,订单id存放到消息队列
         String msg = UserHolder.getUser().getId().toString()+","+voucherId+","+orderId;
-        String queueName = "simpleQueue_1";
+        String queueName = "seckillVoucherQueue_1";
         rabbitTemplate.convertAndSend(queueName,msg);
 
         return Result.ok(orderId);
     }
 
-    @RabbitListener(queues = "simpleQueue_1")
+    @RabbitListener(queues = "seckillVoucherQueue_1")
     public void seckillVoucherListener(String msg){
         log.info("线程:{}执行seckillVoucherListener方法",Thread.currentThread().getId());
         String[] strings = msg.split(",");

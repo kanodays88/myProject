@@ -52,7 +52,7 @@ public class UploadController {
         int hash = name.hashCode();
         int d1 = hash & 0xF;
         int d2 = (hash >> 4) & 0xF;
-        // 判断目录是否存在
+        // 判断目录是否存在       主目录                              子目录   合并成完整目录
         File dir = new File(SystemConstants.IMAGE_UPLOAD_DIR, StrUtil.format("/blogs/{}/{}", d1, d2));
         if (!dir.exists()) {
             dir.mkdirs();
