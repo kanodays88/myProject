@@ -1,8 +1,10 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.BlogListToJsonDTO;
 import com.hmdp.dto.Result;
@@ -18,13 +20,19 @@ import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PreDestroy;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,11 +73,15 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     private static final String ID_PREFIX = UUID.randomUUID().toString()+"-";
 
+    private static final String BLOG_LIKENUMBER_QUEUE_NAME = "blogLikeNumberQueue_1";
+
     //创建线程池为10个线程
     private final ExecutorService CACHE_REFRESH_POOL = Executors.newFixedThreadPool(10);
 
     @Override
     public Result queryBlogById(Long blogId) {
+        //查询缓存中维护的点赞数
+        String likeNum = stringRedisTemplate.opsForValue().get(BLOG_CACHE_LIKE_NUMBER_NAME + blogId);
         //获取缓存
         RedisData cacheData = redisUtil.getValueTime(BLOG_CACHE_NAME, blogId, blogMapper);
         if(cacheData == null){
@@ -78,6 +90,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             blog.setUserId(user.getId());
             blog.setName(user.getNickName());
             blog.setIcon(user.getIcon());
+            blog.setLiked(Integer.valueOf(likeNum));
             boolean cacheStatus = redisUtil.setValueForRedis(BLOG_CACHE_NAME + blogId, blog, LocalDateTime.now().plusMinutes(3));
             if(cacheStatus == false){
                 log.info("缓存:{}添加失败",BLOG_CACHE_NAME+blogId);
@@ -88,15 +101,18 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         //同步维护的点赞数
         JSONObject data = (JSONObject) cacheData.getData();//由于是复杂类型Blog,实际运行时JSONUtil会解析成JSONObject
         Blog bean = data.toBean(Blog.class);
-        //查询缓存中维护的点赞数
-        String likeNum = stringRedisTemplate.opsForValue().get(BLOG_CACHE_LIKE_NUMBER_NAME + blogId);
+        //判断该用户是否点赞过
+        Boolean likeStatus = stringRedisTemplate.opsForSet().isMember(BLOG_CACHE_LIKE_USER_NAME + blogId, UserHolder.getUser().getId().toString());
+        if(likeStatus == true) bean.setIsLike(true);
+        else bean.setIsLike(false);
         bean.setLiked(Integer.valueOf(likeNum));
         return Result.ok(bean);
     }
 
     @Override
     public Result likeBlog(Long id) {
-        //实现思路，在redis中存储blog点赞过的用户集合,维护redis缓存中点赞的数量，异步同步给数据库
+        //实现思路，在redis中存储blog点赞过的用户集合,维护redis缓存中点赞的数量
+        //使用SpringTask定期检查redis中的点赞数同步到数据库
 
         //判断该用户是否点赞过
         Boolean likeStatus = stringRedisTemplate.opsForSet().isMember(BLOG_CACHE_LIKE_USER_NAME + id, UserHolder.getUser().getId().toString());
@@ -108,8 +124,6 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             stringRedisTemplate.opsForValue().decrement(BLOG_CACHE_LIKE_NUMBER_NAME+id);
             //刷新TTL时间
             stringRedisTemplate.expire(BLOG_CACHE_LIKE_NUMBER_NAME+id,BLOG_LIKE_NUMBER_TTL_TIME, TimeUnit.MINUTES);
-            //将blogId发送到消息队列，消费者异步处理数据库中点赞数--
-            rabbitTemplate.convertAndSend(id.toString()+",false");
         }
         else{
             //进行点赞
@@ -119,12 +133,44 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             stringRedisTemplate.opsForValue().increment(BLOG_CACHE_LIKE_NUMBER_NAME+id);
             //刷新TTL时间
             stringRedisTemplate.expire(BLOG_CACHE_LIKE_NUMBER_NAME+id,BLOG_LIKE_NUMBER_TTL_TIME, TimeUnit.MINUTES);
-            //将blogId发送到消息队列，消费者异步处理数据库中点赞数--
-            rabbitTemplate.convertAndSend(id.toString()+",true");
         }
 
-
         return Result.ok();
+    }
+
+    //存储此时数据库中的blog点赞数
+    private static HashMap<Long,Integer> blogLikeNumber = new HashMap<>();
+    /**
+     * 定时扫描同步redis中的点赞数
+     *
+     */
+    @Scheduled(cron = "*/2 * * * * ?")
+    @Async
+    public void syncLikeNumber(){
+        log.info("");
+        //批量获取所有以BLOG_CACHE_LIKE_NUMBER_NAME为前缀的key
+        Set<String> keys = stringRedisTemplate.keys(BLOG_CACHE_LIKE_NUMBER_NAME + "*");
+
+        //为空则取消执行
+        if(keys == null || keys.isEmpty()){
+            return;
+        }
+
+        for(String key:keys){
+            //初始化数据，blogId和点赞数likeNumber
+            String likeNumberStr = stringRedisTemplate.opsForValue().get(key);
+            String[] strings = key.split("_");
+            Long blogId = Long.valueOf(strings[1]);
+            Integer likeNumber = Integer.valueOf(likeNumberStr);
+            //不为空，且点赞数没变化直接跳过
+            if(blogLikeNumber.get(blogId) != null && blogLikeNumber.get(blogId) == likeNumber) continue;
+
+            //为空或者点赞数有变化，修改数据库
+            LambdaUpdateWrapper<Blog> wrapper = new LambdaUpdateWrapper<>();
+            wrapper.eq(Blog::getId,blogId).set(Blog::getLiked,likeNumber);
+            blogLikeNumber.put(blogId,likeNumber);
+
+        }
     }
 
     @Override
@@ -179,6 +225,36 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         List<Blog> blogs = getResult(current);
         if(blogs == null) return Result.fail("请重试");
         else return Result.ok(blogs);
+    }
+
+    @PreDestroy
+    public void destroyThreadPool() {
+        if (CACHE_REFRESH_POOL == null || CACHE_REFRESH_POOL.isShutdown()) {
+            return;
+        }
+
+        log.info("开始关闭缓存重建线程池...");
+        // 第一步：发起关闭请求（拒绝新任务，等待已提交任务执行）
+        CACHE_REFRESH_POOL.shutdown();
+
+        try {
+            // 第二步：阻塞等待，最多等10秒（超时则强制关闭）
+            // 超时时间根据你的业务调整：缓存重建一般5秒内完成，设10秒足够
+            if (!CACHE_REFRESH_POOL.awaitTermination(10, TimeUnit.SECONDS)) {
+                log.warn("线程池10秒内未关闭完成，强制中断剩余任务");
+                // 第三步：超时未关闭，强制中断（兜底）
+                List<Runnable> remainingTasks = CACHE_REFRESH_POOL.shutdownNow();
+                log.warn("强制关闭线程池，未执行的任务数：{}", remainingTasks.size());
+            } else {
+                log.info("线程池优雅关闭完成");
+            }
+        } catch (InterruptedException e) {
+            // 等待过程中被中断，再次强制关闭
+            log.error("线程池关闭等待被中断，强制关闭", e);
+            CACHE_REFRESH_POOL.shutdownNow();
+            // 恢复中断状态（线程规范）
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**

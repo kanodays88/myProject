@@ -12,10 +12,12 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @MapperScan("com.hmdp.mapper")
 @SpringBootApplication
 @EnableCaching
+@EnableScheduling
 public class HmDianPingApplication {
 
     public static void main(String[] args) {
