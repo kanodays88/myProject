@@ -8,6 +8,7 @@ import com.hmdp.entity.Blog;
 import com.hmdp.entity.User;
 import com.hmdp.service.IBlogService;
 import com.hmdp.service.IUserService;
+import com.hmdp.service.impl.BlogServiceImpl;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import org.springframework.beans.BeanUtils;
@@ -61,20 +62,22 @@ public class BlogController {
 
     @GetMapping("/hot")
     public Result queryHotBlog(@RequestParam(value = "current", defaultValue = "1") Integer current) {
-        // 根据用户查询
-        Page<Blog> page = blogService.query()
-                .orderByDesc("liked")
-                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
-        // 获取当前页数据
-        List<Blog> records = page.getRecords();
-        // 查询用户
-        records.forEach(blog ->{
-            Long userId = blog.getUserId();
-            User user = userService.getById(userId);
-            blog.setName(user.getNickName());
-            blog.setIcon(user.getIcon());
-        });
-        return Result.ok(records);
+
+        Result r = blogService.queryHotBlog(current);
+//        // 根据用户查询
+//        Page<Blog> page = blogService.query()
+//                .orderByDesc("liked")
+//                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+//        // 获取当前页数据
+//        List<Blog> records = page.getRecords();
+//        // 查询用户
+//        records.forEach(blog ->{
+//            Long userId = blog.getUserId();
+//            User user = userService.getById(userId);
+//            blog.setName(user.getNickName());
+//            blog.setIcon(user.getIcon());
+//        });
+        return r;
     }
 
     @GetMapping("/{id}")

@@ -2,7 +2,7 @@ server:
   port: 8081
 spring:
   rabbitmq:
-    host: 192.168.75.128
+    host: 192.168.74.128
     port: 5672
     virtual-host: /kanodays
     username: kanodays88
@@ -18,11 +18,11 @@ spring:
     name: hmdp
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://192.168.75.128:3306/hmdp?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
+    url: jdbc:mysql://192.168.74.128:3306/hmdp?useUnicode=true&characterEncoding=utf8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
     username: root
     password: zhangboji88
   redis:
-    host: 192.168.75.128
+    host: 192.168.74.128
     port: 6379
     lettuce:
       pool:

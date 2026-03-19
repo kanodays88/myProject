@@ -1,16 +1,30 @@
 package com.hmdp;
 
 
+import cn.hutool.json.JSONUtil;
+import com.hmdp.entity.Blog;
+import com.hmdp.utils.RedisData;
+import com.hmdp.utils.RedisUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.AutoConfigureOrder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+import java.time.LocalDateTime;
 
 @SpringBootTest
 public class MyRabbitMQTest {
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private RedisUtil redisUtil;
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
 
     @Test
     public void testSimpleQueue(){
@@ -30,5 +44,16 @@ public class MyRabbitMQTest {
 
 
 
+
+    @Test
+    public void test1(){
+        Blog blog = new Blog();
+        redisUtil.setValueForRedis("111",blog, LocalDateTime.now().plusMinutes(3));
+
+        String s = stringRedisTemplate.opsForValue().get("111");
+        RedisData bean = JSONUtil.toBean(s, RedisData.class);
+        Blog data = (Blog) bean.getData();
+
+    }
 
 }

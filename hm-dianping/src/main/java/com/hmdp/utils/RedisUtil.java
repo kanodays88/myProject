@@ -88,9 +88,9 @@ public class RedisUtil {
     }
 
     //往redis添加缓存，逻辑过期时间
-    public boolean setValueForRedis(String key, Object val, LocalDateTime localDateTime){
+    public <T> boolean setValueForRedis(String key, T val, LocalDateTime localDateTime){
         //初始化封装类型
-        RedisData redisData = new RedisData();
+        RedisData<T> redisData = new RedisData<>();
         redisData.setData(val);
         redisData.setExpireTime(localDateTime);
         //将redisData转json,如果val为空就存入空缓存
