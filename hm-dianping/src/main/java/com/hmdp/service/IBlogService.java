@@ -10,6 +10,7 @@ public interface IBlogService extends IService<Blog> {
     /**
      *
      * 根据id查询blog
+     *
      * @param blogId
      * @return
      */
@@ -17,6 +18,7 @@ public interface IBlogService extends IService<Blog> {
 
     /**
      * 点赞blog
+     *
      * @param id
      * @return
      */
@@ -25,6 +27,7 @@ public interface IBlogService extends IService<Blog> {
     /**
      *
      * 分页查询热点博客
+     *
      * @param current 页码
      * @return
      */

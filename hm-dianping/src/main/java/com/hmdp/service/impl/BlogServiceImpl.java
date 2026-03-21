@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import ch.qos.logback.classic.spi.EventArgUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
@@ -102,8 +103,8 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         JSONObject data = (JSONObject) cacheData.getData();//由于是复杂类型Blog,实际运行时JSONUtil会解析成JSONObject
         Blog bean = data.toBean(Blog.class);
         //判断该用户是否点赞过
-        Boolean likeStatus = stringRedisTemplate.opsForSet().isMember(BLOG_CACHE_LIKE_USER_NAME + blogId, UserHolder.getUser().getId().toString());
-        if(likeStatus == true) bean.setIsLike(true);
+        Double likeTime = stringRedisTemplate.opsForZSet().score(BLOG_CACHE_LIKE_USER_NAME + blogId, UserHolder.getUser().getId().toString());
+        if(likeTime != null) bean.setIsLike(true);
         else bean.setIsLike(false);
         bean.setLiked(Integer.valueOf(likeNum));
         return Result.ok(bean);
@@ -111,15 +112,16 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Override
     public Result likeBlog(Long id) {
+        //要进行点赞排行（按时间），可以使用redis中的sortedSet有序集合（opsForZSet)，基于某一权值进行排序，这里使用时间戳
         //实现思路，在redis中存储blog点赞过的用户集合,维护redis缓存中点赞的数量
         //使用SpringTask定期检查redis中的点赞数同步到数据库
 
-        //判断该用户是否点赞过
-        Boolean likeStatus = stringRedisTemplate.opsForSet().isMember(BLOG_CACHE_LIKE_USER_NAME + id, UserHolder.getUser().getId().toString());
-        if(likeStatus == true){
+        //判断该用户是否点赞过                            方法返回集合中元素对应的权值,元素不存在返回null
+        Double likeTime = stringRedisTemplate.opsForZSet().score(BLOG_CACHE_LIKE_USER_NAME + id, UserHolder.getUser().getId().toString());
+        if(likeTime != null){
             //取消点赞
             //删除该次点赞记录
-            stringRedisTemplate.opsForSet().remove(BLOG_CACHE_LIKE_USER_NAME + id, UserHolder.getUser().getId().toString());
+            stringRedisTemplate.opsForZSet().remove(BLOG_CACHE_LIKE_USER_NAME + id, UserHolder.getUser().getId().toString());
             //同步减少redis中维护的点赞数
             stringRedisTemplate.opsForValue().decrement(BLOG_CACHE_LIKE_NUMBER_NAME+id);
             //刷新TTL时间
@@ -127,8 +129,8 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
         else{
             //进行点赞
-            //添加该用户的点赞记录
-            stringRedisTemplate.opsForSet().add(BLOG_CACHE_LIKE_USER_NAME+id,UserHolder.getUser().getId().toString());
+            //添加该用户的点赞记录                                                                                          时间戳
+            stringRedisTemplate.opsForZSet().add(BLOG_CACHE_LIKE_USER_NAME+id,UserHolder.getUser().getId().toString(),System.currentTimeMillis());
             //同步增加redis中的点赞数
             stringRedisTemplate.opsForValue().increment(BLOG_CACHE_LIKE_NUMBER_NAME+id);
             //刷新TTL时间
@@ -227,6 +229,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         else return Result.ok(blogs);
     }
 
+
     @PreDestroy
     public void destroyThreadPool() {
         if (CACHE_REFRESH_POOL == null || CACHE_REFRESH_POOL.isShutdown()) {
@@ -285,6 +288,15 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
                 User user = userMapper.selectById(userId);
                 b.setIcon(user.getIcon());
                 b.setName(user.getNickName());
+                //如果redis中点赞数存在，则以redis为准，否则以数据库为准并同步到reis
+                String s = stringRedisTemplate.opsForValue().get(BLOG_CACHE_LIKE_NUMBER_NAME + b.getId());
+                if(s == null || s.equals("")){
+                    //同步数据库的点赞数到redis
+                    redisUtil.setValueForRedis(BLOG_CACHE_LIKE_NUMBER_NAME+b.getId(),b.getLiked().toString(),BLOG_LIKE_NUMBER_TTL_TIME,TimeUnit.MINUTES);
+                }
+                else{
+                    b.setLiked(Integer.valueOf(s));
+                }
             }
             //存入缓存
             BlogListToJsonDTO blogListToJsonDTO = new BlogListToJsonDTO();
