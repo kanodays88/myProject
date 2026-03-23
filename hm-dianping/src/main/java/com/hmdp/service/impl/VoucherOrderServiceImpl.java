@@ -13,8 +13,6 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisUtil;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
-import org.redisson.Redisson;
-import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -25,12 +23,8 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 
 @Service
@@ -113,26 +107,37 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //生成订单id
         long orderId = redisUtil.nextId("order");
         //将用户id,商品id,订单id存放到消息队列
-        String msg = UserHolder.getUser().getId().toString()+","+voucherId+","+orderId;
+//        String msg = UserHolder.getUser().getId().toString()+","+voucherId+","+orderId;
+        Map<String,Object> msg = new HashMap<>();
+        msg.put("orderId",orderId);
+        msg.put("voucherId",voucherId);
+        msg.put("userId",UserHolder.getUser().getId());
+
         String queueName = "seckillVoucherQueue_1";
+        //传输复杂类型，json序列化
         rabbitTemplate.convertAndSend(queueName,msg);
 
         return Result.ok(orderId);
     }
 
     @RabbitListener(queues = "seckillVoucherQueue_1")
-    public void seckillVoucherListener(String msg){
+    public void seckillVoucherListener(Map<String,Object> msg){
         log.info("线程:{}执行seckillVoucherListener方法",Thread.currentThread().getId());
-        String[] strings = msg.split(",");
-        Long userId = Long.valueOf(strings[0]);
-        Long voucherId = Long.valueOf(strings[1]);
-        Long orderId = Long.valueOf(strings[2]);
+//        String[] strings = msg.split(",");
+//        Long userId = Long.valueOf(strings[0]);
+//        Long voucherId = Long.valueOf(strings[1]);
+//        Long orderId = Long.valueOf(strings[2]);
+        //rabbitmq的json序列化会根据数字大小决定用Long还是Integer,我这里手动指定转换为long
+        Long userId = ((Number) msg.get("userId")).longValue();
+        Long voucherId = ((Number) msg.get("voucherId")).longValue();
+        Long orderId = ((Number) msg.get("orderId")).longValue();
+
 
         //这里防止redis判断失误或者redis异常，做一个兜底作用，实际开发时有可能有多个消费者监听该队列
         //解决同一个账号高并发下单问题，实现一人一单
         //redis分布式锁版本，解决集群中锁不共用问题
         //尝试获取redis分布式锁                  锁名key: 作用：业务：对应用户                        值value: 当前线程的唯一标识id      上锁时间，单位秒
-        boolean lockStatus = redisUtil.tryLock(REDIS_LOCK_NAME + userId, ID_PREFIX+Thread.currentThread().getId(), 120);
+        boolean lockStatus = redisUtil.tryLock(REDIS_LOCK_NAME + voucherId, ID_PREFIX+Thread.currentThread().getId(), 120);
         if(lockStatus == false){
             //说明锁被占用，说明同一个用户在多次下单且该用户此时正在下单
             log.error("请勿重复操作");
@@ -141,10 +146,10 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //上锁成功，执行扣库存生成订单业务
 //        Result r = null;//存储try块内的返回结果
         try{
-            voucherOrderServiceImpl.getResult(orderId,userId,voucherId);
+            voucherOrderServiceImpl.getResult(orderId, userId,voucherId);
         }finally {
             //                      当前锁的key                                         该线程创建锁时的唯一标识
-            redisUtil.deleteLock(REDIS_LOCK_NAME+userId,ID_PREFIX+Thread.currentThread().getId());
+            redisUtil.deleteLock(REDIS_LOCK_NAME+ voucherId,ID_PREFIX+Thread.currentThread().getId());
 //            //释放锁
 //            //先判断该锁是不是由该线程自己创建的
 //            String s = stringRedisTemplate.opsForValue().get(REDIS_LOCK_NAME + UserHolder.getUser().getId());

@@ -1,6 +1,8 @@
 package com.hmdp;
 
 import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cache.annotation.EnableCaching;
@@ -49,5 +51,12 @@ public class HmDianPingApplication {
         return RedisCacheManager.builder(factory)
                 .cacheDefaults(config)
                 .build();
+    }
+
+    //MessageConverter消息转换器是SpringAMQP包下的，控制rabbitmq的序列化
+    //修改成Jackson2JsonMessageConverter,表示修改rabbitmq序列化从jdk修改成json
+    @Bean
+    public MessageConverter jacksonJSONMessageConverter(){
+        return new Jackson2JsonMessageConverter();
     }
 }
