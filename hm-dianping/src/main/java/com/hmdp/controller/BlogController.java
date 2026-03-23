@@ -80,6 +80,12 @@ public class BlogController {
         return r;
     }
 
+    @GetMapping("/of/user")
+    public Result queryBlogByUserId(@RequestParam(value = "current", defaultValue = "1") Integer current,
+                                    @RequestParam("id") Long userId) {
+        return blogService.queryBlogByUserId(current, userId);
+    }
+
     @GetMapping("/{id}")
     public Result queryBlogById(@PathVariable("id") Long blogId){
         return blogService.queryBlogById(blogId);

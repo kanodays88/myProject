@@ -32,4 +32,12 @@ public interface IBlogService extends IService<Blog> {
      * @return
      */
     Result queryHotBlog(Integer current);
+
+    /**
+     * 根据用户id分页查询博客
+     * @param current 页码
+     * @param userId 用户id
+     * @return
+     */
+    Result queryBlogByUserId(Integer current, Long userId);
 }

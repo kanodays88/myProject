@@ -310,4 +310,15 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             }
         }
     }
+
+    @Override
+    public Result queryBlogByUserId(Integer current, Long userId) {
+        Page<Blog> page = blogMapper.selectPage(
+                new Page<>(current, SystemConstants.MAX_PAGE_SIZE),
+                new LambdaQueryWrapper<Blog>()
+                        .eq(Blog::getUserId, userId)
+                        .orderByDesc(Blog::getCreateTime)
+        );
+        return Result.ok(page.getRecords());
+    }
 }
