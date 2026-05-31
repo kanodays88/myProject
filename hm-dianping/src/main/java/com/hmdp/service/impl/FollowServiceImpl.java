@@ -125,7 +125,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         //     .in()拼接条件
         //     .list()执行查询，底层实现seletList
         //     .stream()将集合转换成顺序流，函数式for循环
-        //     .map(传入方法) 映射转换，根据方法将传入的参数转化为返回的参数
+        //     .map(传入方法) 映射转换，根据方法将传入的参数转化为返回的参数，不是直接修改原来集合，是转换后生成新集合返回，需要手动接取
         //     .collect(Collectors.toList())将处理好的顺序流转化为集合，具体为List类型
         List<UserDTO> users = userService.query().in("id", ids).list()
                 .stream().map(user -> {
@@ -150,7 +150,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         if (!follows.isEmpty()) {
             // 将关注用户ID批量写入Redis Set集合
             //解析：follows.stream()将集合转化为顺序流，类似于for循环
-            //     .map(传入方法) 将元素映射转换，常使用lambda箭头函数
+            //     .map(传入方法) 将元素映射转换，常使用lambda箭头函数,不是修改原来的集合，而是转换后生成新的集合，需要手动接取
             //     .toArray(String[]::new)  转化为数组类型，具体类型是String[]
             stringRedisTemplate.opsForSet().add(key, follows.stream()
                     .map(f -> f.getFollowUserId().toString())

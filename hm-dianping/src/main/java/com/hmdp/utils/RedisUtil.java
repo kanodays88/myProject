@@ -50,7 +50,7 @@ public class RedisUtil {
 
 
     public <T> boolean tryLock(String key,T value,long time){
-        //setIfAbsent创建键值对，如果存在则创建并返回true,否则不创建返回false
+        //setIfAbsent创建键值对，如果对应键值对不存在则创建并返回true,如果存在则不创建返回false
         Boolean aBoolean = stringRedisTemplate.opsForValue().setIfAbsent(key, value+"", time, TimeUnit.SECONDS);
 //        return aBoolean.booleanValue();这种方法无法避免当aBoolean为null产生报错
         return Boolean.TRUE.equals(aBoolean);//直接用其与TRUE进行对比

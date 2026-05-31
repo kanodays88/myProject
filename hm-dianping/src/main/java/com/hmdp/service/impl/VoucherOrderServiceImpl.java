@@ -3,8 +3,10 @@ package com.hmdp.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.hmdp.dto.Result;
+import com.hmdp.entity.SeckillMessage;
 import com.hmdp.entity.SeckillVoucher;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.mapper.SeckillMessageMapper;
 import com.hmdp.mapper.SeckillVoucherMapper;
 import com.hmdp.mapper.VoucherMapper;
 import com.hmdp.mapper.VoucherOrderMapper;
@@ -24,7 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 
 @Service
@@ -51,6 +53,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private SeckillVoucherMapper seckillVoucherMapper;
 
     @Autowired
+    private SeckillMessageMapper seckillMessageMapper;
+
+    @Autowired
     private RedissonClient redissonClient;
 
     @Autowired
@@ -72,7 +77,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
     private static final String ORDER_BOUGHT_USER_KEY = "orderBought:seckillVoucher:";
 
-    //lua脚本的加载类                        返回类型
+    // ====== 异步线程池（和Tomcat线程池隔离） ======
+    private final ExecutorService seckillExecutor = new ThreadPoolExecutor(
+            4, 8, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(2000),
+            new ThreadPoolExecutor.CallerRunsPolicy());
+
+
+    //lua脚本的加载类      库存扣减和校验        返回类型
     private static final DefaultRedisScript<Long> REDIS_SCRIPT;
     static {
         //初始化
@@ -82,6 +94,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //指定返回类型
         REDIS_SCRIPT.setResultType(Long.class);
     }
+    // ====== Lua：回滚 ======
+    private static final DefaultRedisScript<Long> ROLLBACK_SCRIPT;
+    static {
+        ROLLBACK_SCRIPT = new DefaultRedisScript<>();
+        ROLLBACK_SCRIPT.setLocation(new ClassPathResource("Lua/rollbackSeckill.lua"));
+        ROLLBACK_SCRIPT.setResultType(Long.class);
+    }
+
 
 
     //异步秒杀业务
@@ -106,19 +126,77 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 
         //生成订单id
         long orderId = redisUtil.nextId("order");
+        //用户id
+        long userId = UserHolder.getUser().getId();
+        seckillExecutor.submit(() -> processAsync(orderId, userId, voucherId));
+        return Result.ok(orderId);
+
         //将用户id,商品id,订单id存放到消息队列
 //        String msg = UserHolder.getUser().getId().toString()+","+voucherId+","+orderId;
-        Map<String,Object> msg = new HashMap<>();
-        msg.put("orderId",orderId);
-        msg.put("voucherId",voucherId);
-        msg.put("userId",UserHolder.getUser().getId());
+//        Map<String,Object> msg = new HashMap<>();
+//        msg.put("orderId",orderId);
+//        msg.put("voucherId",voucherId);
+//        msg.put("userId",UserHolder.getUser().getId());
 
-        String queueName = "seckillVoucherQueue_1";
-        //传输复杂类型，json序列化
-        rabbitTemplate.convertAndSend(queueName,msg);
-
-        return Result.ok(orderId);
+//        String queueName = "seckillVoucherQueue_1";
+//        //传输复杂类型，json序列化
+//        rabbitTemplate.convertAndSend(queueName,msg);
     }
+
+    // ==================== 异步线程：写消息表 + 发MQ ====================
+    private void processAsync(Long orderId, Long userId, Long voucherId) {
+        // 1. 写消息表
+        SeckillMessage msg = SeckillMessage.builder()
+                .id(orderId).voucherId(voucherId)
+                .userId(userId).orderId(orderId)
+                .status(0).retryCount(0).build();
+        try {
+            seckillMessageMapper.insert(msg);
+        } catch (Exception e) {
+            log.error("消息表写入失败,回滚Redis, orderId={}", orderId, e);
+            rollbackRedis(voucherId, userId);
+            return;
+        }
+
+        // 2. 发MQ（重试3次，不依赖定时任务）
+        Exception lastEx = null;
+        for (int i = 0; i < 3; i++) {
+            try {
+                Map<String, Object> mqMsg = new HashMap<>();
+                mqMsg.put("orderId", orderId);
+                mqMsg.put("voucherId", voucherId);
+                mqMsg.put("userId", userId);
+                rabbitTemplate.convertAndSend("seckillVoucherQueue_1", mqMsg);
+                // 发送成功
+                seckillMessageMapper.update(null,
+                        new LambdaUpdateWrapper<SeckillMessage>()
+                                .eq(SeckillMessage::getId, orderId)
+                                .set(SeckillMessage::getStatus, 1));
+                log.info("MQ发送成功, orderId={}", orderId);
+                return;
+            } catch (Exception e) {
+                lastEx = e;
+                log.warn("MQ第{}次发送失败, orderId={}", i + 1, orderId);
+                if (i < 2) {
+                    try {
+                        Thread.sleep((i + 1) * 1000L);
+                    } catch (InterruptedException ignored) {
+                    }
+                }
+            }
+        }
+        // 3. 3次都失败 → 回滚
+        log.error("MQ发送3次失败,回滚Redis, orderId={}", orderId);
+        rollbackRedis(voucherId, userId);
+        seckillMessageMapper.update(null,
+                new LambdaUpdateWrapper<SeckillMessage>()
+                        .eq(SeckillMessage::getId, orderId)
+                        .set(SeckillMessage::getStatus, 3)
+                        .set(SeckillMessage::getErrorMsg,
+                                "MQ发送3次失败:" + (lastEx != null ? lastEx.getMessage() : "")));
+
+    }
+
 
     @RabbitListener(queues = "seckillVoucherQueue_1")
     public void seckillVoucherListener(Map<String,Object> msg){
@@ -137,28 +215,63 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //解决同一个账号高并发下单问题，实现一人一单
         //redis分布式锁版本，解决集群中锁不共用问题
         //尝试获取redis分布式锁                  锁名key: 作用：业务：对应用户                        值value: 当前线程的唯一标识id      上锁时间，单位秒
-        boolean lockStatus = redisUtil.tryLock(REDIS_LOCK_NAME + voucherId, ID_PREFIX+Thread.currentThread().getId(), 120);
+        boolean lockStatus = redisUtil.tryLock(REDIS_LOCK_NAME + userId, ID_PREFIX+Thread.currentThread().getId(), 120);
         if(lockStatus == false){
             //说明锁被占用，说明同一个用户在多次下单且该用户此时正在下单
             log.error("请勿重复操作");
             return;
         }
-        //上锁成功，执行扣库存生成订单业务
-//        Result r = null;//存储try块内的返回结果
         try{
-            voucherOrderServiceImpl.getResult(orderId, userId,voucherId);
+            //上锁成功，执行扣库存生成订单业务
+            // 重试3次
+            Exception lastEx = null;
+            for (int i = 0; i < 3; i++) {
+                try {
+                    voucherOrderServiceImpl.getResult(orderId, userId, voucherId);
+
+                    // ✅ 成功 → 删除消息表中的消息
+                    seckillMessageMapper.delete(new LambdaUpdateWrapper<SeckillMessage>()
+                            .eq(SeckillMessage::getId,orderId));
+                    log.info("下单成功, orderId={}", orderId);
+                    return;
+
+                } catch (Exception e) {
+                    lastEx = e;
+                    log.warn("下单第{}次失败, orderId={}", i + 1, orderId, e);
+                    if (i < 2) {
+                        try { Thread.sleep(500L); } catch (InterruptedException ignored) {}
+                    }
+                }
+            }
+            // ❌ 3次都失败 → 回滚Redis + 标记失败（不回MQ）
+            log.error("下单3次失败,回滚Redis, orderId={}", orderId);
+            rollbackRedis(voucherId, userId);
+            seckillMessageMapper.update(null,
+                    new LambdaUpdateWrapper<SeckillMessage>()
+                            .eq(SeckillMessage::getId, orderId)
+                            .set(SeckillMessage::getStatus, 3)
+                            .set(SeckillMessage::getErrorMsg,
+                                    "下单3次失败:" + (lastEx != null ? lastEx.getMessage() : "")));
         }finally {
-            //                      当前锁的key                                         该线程创建锁时的唯一标识
-            redisUtil.deleteLock(REDIS_LOCK_NAME+ voucherId,ID_PREFIX+Thread.currentThread().getId());
-//            //释放锁
-//            //先判断该锁是不是由该线程自己创建的
-//            String s = stringRedisTemplate.opsForValue().get(REDIS_LOCK_NAME + UserHolder.getUser().getId());
-//            //这步释放锁和检验锁不是原子性，有可能检验成功但是删除失败导致锁一直存在，或者检验成功但是删除阻塞延迟了后续恢复删除了其他线程的锁
-//            if((ID_PREFIX+Thread.currentThread().getId()).equals(s)){
-//               //标识相同证明是同一个线程创建的锁，可以释放
-//               redisUtil.deleteLock(REDISLOCKNAME + UserHolder.getUser().getId());
-//            }
+            //释放锁
+            redisUtil.deleteLock(REDIS_LOCK_NAME + userId, ID_PREFIX+Thread.currentThread().getId());
         }
+
+
+//        try{
+//            voucherOrderServiceImpl.getResult(orderId, userId,voucherId);
+//        }finally {
+//            //                      当前锁的key                                         该线程创建锁时的唯一标识
+//            redisUtil.deleteLock(REDIS_LOCK_NAME+ userId,ID_PREFIX+Thread.currentThread().getId());
+////            //释放锁
+////            //先判断该锁是不是由该线程自己创建的
+////            String s = stringRedisTemplate.opsForValue().get(REDIS_LOCK_NAME + UserHolder.getUser().getId());
+////            //这步释放锁和检验锁不是原子性，有可能检验成功但是删除失败导致锁一直存在，或者检验成功但是删除阻塞延迟了后续恢复删除了其他线程的锁
+////            if((ID_PREFIX+Thread.currentThread().getId()).equals(s)){
+////               //标识相同证明是同一个线程创建的锁，可以释放
+////               redisUtil.deleteLock(REDISLOCKNAME + UserHolder.getUser().getId());
+////            }
+//        }
 
 
     }
@@ -168,14 +281,14 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     public void getResult(Long orderId,Long userId,Long voucherId) {
         //防止redis出错有漏网之鱼
         //判断该用户是否已经购买过了
-        LambdaQueryWrapper<VoucherOrder> voucherOrderWrapper = new LambdaQueryWrapper<>();
-        voucherOrderWrapper.eq(VoucherOrder::getVoucherId,voucherId).eq(VoucherOrder::getUserId,userId);
-        List<VoucherOrder> voucherOrders = voucherOrderMapper.selectList(voucherOrderWrapper);
-        if(voucherOrders != null && voucherOrders.size() >= 1){
-            //该用户已经购买过
-            log.error("该用户已购买过");
+        LambdaQueryWrapper<VoucherOrder> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(VoucherOrder::getVoucherId, voucherId)
+                .eq(VoucherOrder::getUserId, userId);
+        if (voucherOrderMapper.selectCount(wrapper) >= 1) {
+            log.warn("用户{}已购买过", userId);
             return;
         }
+
         //减库存
         //用乐观锁解决超卖问题，用库存量是否大于0来判断
         //lambda条件构造器
@@ -197,6 +310,16 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             throw new RuntimeException("优惠卷订单新增失败");
         }
     }
+
+    // ==================== 回滚Redis ====================
+    private void rollbackRedis(Long voucherId, Long userId) {
+        List<String> keys = new ArrayList<>();
+        keys.add(SECKILL_VOUCHER_STOCK_KEY + voucherId);
+        keys.add(ORDER_BOUGHT_USER_KEY + voucherId + "::users");
+        stringRedisTemplate.execute(ROLLBACK_SCRIPT, keys, userId.toString());
+        log.info("Redis已回滚: voucherId={}, userId={}", voucherId, userId);
+    }
+
 
 
 
