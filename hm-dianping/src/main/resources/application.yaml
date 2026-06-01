@@ -7,9 +7,15 @@ spring:
     virtual-host: /kanodays
     username: kanodays88
     password: zhangboji88
+    publisher-confirm-type: correlated  #开启异步回调发布确认机制，确保生产者将消息发布到交换机或消息队列上（具体可以通过CorrelationData的回调或者Future确认）
+    publisher-returns: true  #启用无法路由消息的返回机制
+    template:
+      mandatory: true   # 强制路由，当消息无法路由到队列时返回给生产者 需要设置setReturnsCallback回调处理返回的消息
     listener:
       simple:
-        prefetch: 1 #设置每个消费者每次只能获取一个消息，处理完后才能获取下一个，不设置这个当多个消费者共用一个消息队列时，会负载均衡，如果有个别消费者性能差会拖慢整体节奏
+        prefetch: 1  #设置每个消费者每次只能获取一个消息，处理完后才能获取下一个，不设置这个当多个消费者共用一个消息队列时，会负载均衡，如果有个别消费者性能差会拖慢整体节奏
+        acknowledge-mode: manual   #自动确认模式manual手动确认，业务处理完成后手动调用basicAck
+        default-requeue-rejected: false  # 被拒绝的消息不重新入队
   profiles:
     active: server1
   main:

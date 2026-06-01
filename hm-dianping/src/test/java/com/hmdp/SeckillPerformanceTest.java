@@ -43,7 +43,7 @@ import java.util.stream.Collectors;
 @Slf4j
 @SpringBootTest(
     webEnvironment = SpringBootTest.WebEnvironment.NONE,
-    classes = {HmDianPingApplication.class, SeckillPerformanceTest.TestQueueConfig.class}
+    classes = {HmDianPingApplication.class}
 )
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -100,13 +100,13 @@ public class SeckillPerformanceTest {
     // ================================================================
     //  MQ 队列声明（确保 @RabbitListener 能正常启动）
     // ================================================================
-    @Configuration
-    static class TestQueueConfig {
-        @Bean
-        public Queue seckillVoucherQueue() {
-            return new Queue("seckillVoucherQueue_1", true);
-        }
-    }
+//    @Configuration
+//    static class TestQueueConfig {
+//        @Bean
+//        public Queue seckillVoucherQueue() {
+//            return new Queue("seckillVoucherQueue_1", true);
+//        }
+//    }
 
     // ================================================================
     //  测试 0：验证可通过业务接口创建 100 张秒杀券
@@ -310,6 +310,7 @@ public class SeckillPerformanceTest {
     // ================================================================
     private void verifyDataConsistency(String scenarioName, Long voucherId, int apiSuccess) {
         log.info("  ── 数据一致性验证 ──");
+
 
         // Redis 库存
         String raw = stringRedisTemplate.opsForValue().get(SECKILL_STOCK_KEY + voucherId);

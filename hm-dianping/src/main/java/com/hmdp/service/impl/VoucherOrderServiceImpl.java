@@ -14,17 +14,22 @@ import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisUtil;
 import com.hmdp.utils.UserHolder;
+import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -128,78 +133,51 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         long orderId = redisUtil.nextId("order");
         //用户id
         long userId = UserHolder.getUser().getId();
+        //开启异步线程发送消息
         seckillExecutor.submit(() -> processAsync(orderId, userId, voucherId));
         return Result.ok(orderId);
-
-        //将用户id,商品id,订单id存放到消息队列
-//        String msg = UserHolder.getUser().getId().toString()+","+voucherId+","+orderId;
-//        Map<String,Object> msg = new HashMap<>();
-//        msg.put("orderId",orderId);
-//        msg.put("voucherId",voucherId);
-//        msg.put("userId",UserHolder.getUser().getId());
-
-//        String queueName = "seckillVoucherQueue_1";
-//        //传输复杂类型，json序列化
-//        rabbitTemplate.convertAndSend(queueName,msg);
     }
 
     // ==================== 异步线程：写消息表 + 发MQ ====================
     private void processAsync(Long orderId, Long userId, Long voucherId) {
-        // 1. 写消息表
-        SeckillMessage msg = SeckillMessage.builder()
-                .id(orderId).voucherId(voucherId)
-                .userId(userId).orderId(orderId)
-                .status(0).retryCount(0).build();
-        try {
-            seckillMessageMapper.insert(msg);
-        } catch (Exception e) {
-            log.error("消息表写入失败,回滚Redis, orderId={}", orderId, e);
-            rollbackRedis(voucherId, userId);
-            return;
-        }
+        Map<String, Object> mqMsg = new HashMap<>(3);
+        mqMsg.put("orderId", orderId);
+        mqMsg.put("voucherId", voucherId);
+        mqMsg.put("userId", userId);
 
-        // 2. 发MQ（重试3次，不依赖定时任务）
         Exception lastEx = null;
         for (int i = 0; i < 3; i++) {
+            //CorrelationData用于消息发送的确认、跟踪和回调处理
+            //构建CorrelationData并赋予id
+            CorrelationData cd = new CorrelationData(orderId + "-" + i);
+            //发送时携带这玩意
+            rabbitTemplate.convertAndSend("seckillVoucherQueue_1", mqMsg, cd);
             try {
-                Map<String, Object> mqMsg = new HashMap<>();
-                mqMsg.put("orderId", orderId);
-                mqMsg.put("voucherId", voucherId);
-                mqMsg.put("userId", userId);
-                rabbitTemplate.convertAndSend("seckillVoucherQueue_1", mqMsg);
-                // 发送成功
-                seckillMessageMapper.update(null,
-                        new LambdaUpdateWrapper<SeckillMessage>()
-                                .eq(SeckillMessage::getId, orderId)
-                                .set(SeckillMessage::getStatus, 1));
-                log.info("MQ发送成功, orderId={}", orderId);
-                return;
+                //阻塞等待2秒，获取消息队列向生产者发送的消息确认结果，超过两秒默认失败，内部有ack属性判断是否失败
+                CorrelationData.Confirm confirmation =
+                        cd.getFuture().get(2, TimeUnit.SECONDS);
+                if (confirmation != null && confirmation.isAck()) {
+                    log.info("MQ发送成功, orderId={}", orderId);
+                    return;
+                }
+                lastEx = new RuntimeException("Broker nack: " + confirmation.getReason());
             } catch (Exception e) {
                 lastEx = e;
-                log.warn("MQ第{}次发送失败, orderId={}", i + 1, orderId);
-                if (i < 2) {
-                    try {
-                        Thread.sleep((i + 1) * 1000L);
-                    } catch (InterruptedException ignored) {
-                    }
-                }
+            }
+            log.warn("MQ第{}次发送失败, orderId={}", i + 1, orderId);
+            if (i < 2) {
+                try { Thread.sleep((i + 1) * 1000L); } catch (InterruptedException ignored) {}
             }
         }
-        // 3. 3次都失败 → 回滚
-        log.error("MQ发送3次失败,回滚Redis, orderId={}", orderId);
+        log.error("MQ发送3次失败,回滚Redis, orderId={}", orderId, lastEx);
         rollbackRedis(voucherId, userId);
-        seckillMessageMapper.update(null,
-                new LambdaUpdateWrapper<SeckillMessage>()
-                        .eq(SeckillMessage::getId, orderId)
-                        .set(SeckillMessage::getStatus, 3)
-                        .set(SeckillMessage::getErrorMsg,
-                                "MQ发送3次失败:" + (lastEx != null ? lastEx.getMessage() : "")));
-
     }
 
 
     @RabbitListener(queues = "seckillVoucherQueue_1")
-    public void seckillVoucherListener(Map<String,Object> msg){
+    public void seckillVoucherListener(Map<String,Object> msg, Channel channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag){
+        //Channel由RabbitMQ自动注入，在程序与RabbitMQ之间建立虚拟链接，在这个方法里的作用是手动确认消息处理结果
+        //@Header(AmqpHeaders.DELIVERY_TAG) long tag 是 RabbitMQ 分配给每条消息的唯一递增编号（针对当前 Channel 而言）。
         log.info("线程:{}执行seckillVoucherListener方法",Thread.currentThread().getId());
 //        String[] strings = msg.split(",");
 //        Long userId = Long.valueOf(strings[0]);
@@ -221,48 +199,36 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             log.error("请勿重复操作");
             return;
         }
-        try{
-            //上锁成功，执行扣库存生成订单业务
-            // 重试3次
+        try {
             Exception lastEx = null;
             for (int i = 0; i < 3; i++) {
                 try {
-                    voucherOrderServiceImpl.getResult(orderId, userId, voucherId);
+                    // 测试死信队列用：模拟每次下单都失败
+                    throw new RuntimeException("测试DLQ：强制失败");
 
-                    // ✅ 成功 → 删除消息表中的消息
-                    seckillMessageMapper.delete(new LambdaUpdateWrapper<SeckillMessage>()
-                            .eq(SeckillMessage::getId,orderId));
-                    log.info("下单成功, orderId={}", orderId);
-                    return;
-
+//                    voucherOrderServiceImpl.getResult(orderId, userId, voucherId);
+//                    log.info("下单成功, orderId={}", orderId);
+//                    channel.basicAck(tag, false);   // ✅ 成功 → 手动 Ack向消息队列确认
+//                    return;
                 } catch (Exception e) {
                     lastEx = e;
-                    log.warn("下单第{}次失败, orderId={}", i + 1, orderId, e);
-                    if (i < 2) {
-                        try { Thread.sleep(500L); } catch (InterruptedException ignored) {}
-                    }
+                    log.warn("下单第{}次失败, orderId={}", i + 1, orderId);
+//                    if (i < 2) {
+//                        try { Thread.sleep(500L); } catch (InterruptedException ignored) {}
+//                    }
                 }
             }
-            // ❌ 3次都失败 → 回滚Redis + 标记失败（不回MQ）
-            log.error("下单3次失败,回滚Redis, orderId={}", orderId);
-            rollbackRedis(voucherId, userId);
-            seckillMessageMapper.update(null,
-                    new LambdaUpdateWrapper<SeckillMessage>()
-                            .eq(SeckillMessage::getId, orderId)
-                            .set(SeckillMessage::getStatus, 3)
-                            .set(SeckillMessage::getErrorMsg,
-                                    "下单3次失败:" + (lastEx != null ? lastEx.getMessage() : "")));
-        }finally {
-            //释放锁
-            redisUtil.deleteLock(REDIS_LOCK_NAME + userId, ID_PREFIX+Thread.currentThread().getId());
-        }
-
-
-//        try{
-//            voucherOrderServiceImpl.getResult(orderId, userId,voucherId);
-//        }finally {
-//            //                      当前锁的key                                         该线程创建锁时的唯一标识
-//            redisUtil.deleteLock(REDIS_LOCK_NAME+ userId,ID_PREFIX+Thread.currentThread().getId());
+            // 3次都失败 → Reject → 路由到 DLQ
+            log.error("下单3次失败, 消息进入死信队列, orderId={}", orderId, lastEx);
+            channel.basicReject(tag, false);   // ❌ requeue=false → 消费者拒绝该消息，并且该消息不重新入队，消息被拒绝后自动路由到死信队列
+        } catch (Exception e) {
+            log.error("消费者异常, orderId={}", orderId, e);
+            try {
+                channel.basicReject(tag, false);//❌ requeue=false → 消费者拒绝该消息，并且该消息不重新入队，消息被拒绝后自动路由到死信队列
+            } catch (IOException ignored) {}
+        } finally {
+            redisUtil.deleteLock(REDIS_LOCK_NAME + userId,
+                    ID_PREFIX + Thread.currentThread().getId());
 ////            //释放锁
 ////            //先判断该锁是不是由该线程自己创建的
 ////            String s = stringRedisTemplate.opsForValue().get(REDIS_LOCK_NAME + UserHolder.getUser().getId());
@@ -271,9 +237,29 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
 ////               //标识相同证明是同一个线程创建的锁，可以释放
 ////               redisUtil.deleteLock(REDISLOCKNAME + UserHolder.getUser().getId());
 ////            }
-//        }
+        }
 
 
+    }
+    //当消息从队列里被踢出/消息过期/被消费者拒绝  这些消息会自动路由到死信队列
+    //死信消费者
+    @RabbitListener(queues = "seckillVoucherDLQ")
+    public void seckillVoucherDLQListener(Map<String,Object> msg, Channel channel,
+                                          @Header(AmqpHeaders.DELIVERY_TAG) long tag) {
+        Long userId = ((Number) msg.get("userId")).longValue();
+        Long voucherId = ((Number) msg.get("voucherId")).longValue();
+        Long orderId = ((Number) msg.get("orderId")).longValue();
+        log.warn("收到死信消息, 回滚Redis库存: orderId={}", orderId);
+        try {
+            rollbackRedis(voucherId, userId);
+            log.info("死信回滚成功: orderId={}", orderId);
+            channel.basicAck(tag, false);   // ✅ 手动 Ack
+        } catch (Exception e) {
+            log.error("死信回滚失败, orderId={}", orderId, e);
+            try {
+                channel.basicAck(tag, false);  // ✅ 失败也 Ack，防止死循环
+            } catch (IOException ignored) {}
+        }
     }
 
     @Override

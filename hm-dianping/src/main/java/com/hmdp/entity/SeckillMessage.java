@@ -19,7 +19,7 @@ public class SeckillMessage implements Serializable {
     private Long voucherId;
     private Long userId;
     private Long orderId;
-    private Integer status;       // 0-待处理 1-已发送 2-已消费 3-已回滚
+    private Integer status;       // 0-待处理 1-已发送 2-已送达 3-已回滚
     private Integer retryCount;
     private String errorMsg;
     private LocalDateTime createTime;
